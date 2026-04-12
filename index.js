@@ -1,5 +1,9 @@
 const puppeteer = require("puppeteer-core");
 const axios = require("axios");
+const express = require("express");
+const app = express();
+const PORT = process.env.PORT || 3005;
+
 let chromium;
 try {
   chromium = require("@sparticuz/chromium-min");
@@ -7,7 +11,11 @@ try {
   // Local environment might not have this
 }
 
-const WEBHOOK_URL = "https://n8n-0g84.onrender.com/webhook/news";
+// ⚠️ তোমার Render বা n8n এর আসল webhook URL দাও
+// Example: "https://your-app-name.onrender.com/webhook/news"
+// অথবা n8n ব্যবহার করলে: "https://your-n8n-instance.cloud/webhook/xxxxx"
+const WEBHOOK_URL = "https://n8n-latest-tl33.onrender.com/webhook/news";
+
 
 const sent = new Set();
 
@@ -31,10 +39,21 @@ function parseMinutes(text = "") {
     .replace(/\u00a0/g, " ")
     .trim();
 
-  const match = text.match(/(\d+)/);
-  if (!match) return null;
+  const num = parseInt((text.match(/(\d+)/) || [])[1]);
+  if (isNaN(num)) return null;
 
-  return parseInt(match[1]);
+  // ঘন্টা (hour) হলে মিনিটে convert করো
+  if (/ঘন্টা|hour|hr/i.test(text)) {
+    return num * 60;
+  }
+
+  // দিন (day) হলে মিনিটে convert করো
+  if (/দিন|day/i.test(text)) {
+    return num * 1440;
+  }
+
+  // default: মিনিট
+  return num;
 }
 
 // ==========================
@@ -80,7 +99,13 @@ async function sendToN8N(payload, retry = 2) {
 // ==========================
 async function scrapeDetails(page, url) {
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+
+    // Wait for article body to render (Prothom Alo is React-based)
+    await page.waitForSelector(
+      ".story-contents, .story-elements-wrapper, [class*='story-content'], article p",
+      { timeout: 8000 }
+    ).catch(() => { }); // silent if not found
 
     return await page.evaluate(() => {
       const image =
@@ -92,18 +117,19 @@ async function scrapeDetails(page, url) {
       let isoTime = "";
       const meta = document.querySelector('meta[property="article:published_time"]');
       const ldJsonScript = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
-                                .find(s => s.innerText.includes("datePublished"));
-      
+        .find(s => s.innerText.includes("datePublished"));
+
       if (ldJsonScript) {
         const match = ldJsonScript.innerText.match(/"datePublished"\s*:\s*"([^"]+)"/);
         if (match) isoTime = match[1];
       }
-      
+
       if (!isoTime && meta) {
         isoTime = meta.content;
       }
 
       const timeEl =
+        document.querySelector("time[datetime]") ||
         document.querySelector("article time") ||
         document.querySelector("time");
 
@@ -113,14 +139,68 @@ async function scrapeDetails(page, url) {
         if (!isoTime) isoTime = timeEl.getAttribute("datetime") || "";
       }
 
-      const description =
-        Array.from(document.querySelectorAll("article p"))
+      // ==========================================
+      // PROTHOM ALO SPECIFIC CONTENT EXTRACTION
+      // ==========================================
+      let description = "";
+
+      // Helper: clean and extract text from a container element
+      function extractText(container) {
+        if (!container) return "";
+        // Clone so we don't mutate the real DOM
+        const clone = container.cloneNode(true);
+        // Remove noise: scripts, styles, ads, share buttons, related links, image captions
+        clone.querySelectorAll(
+          'script, style, noscript, iframe, ' +
+          '[class*="ad"], [class*="advertisement"], [class*="sponsor"], ' +
+          '[class*="share"], [class*="social"], [class*="related"], ' +
+          '[class*="caption"], [class*="photo-caption"], ' +
+          '[aria-hidden="true"], [hidden], .visually-hidden, .sr-only'
+        ).forEach(el => el.remove());
+        return clone.innerText.trim();
+      }
+
+      // 1. Prothom Alo primary: .story-contents or .story-elements-wrapper
+      const storyContents =
+        document.querySelector(".story-contents") ||
+        document.querySelector(".story-elements-wrapper") ||
+        document.querySelector("[class*='story-content']") ||
+        document.querySelector("[class*='story-element']");
+
+      if (storyContents) {
+        description = extractText(storyContents);
+      }
+
+      // 2. Fallback: paragraphs inside .story-contents
+      if (!description) {
+        const paras = document.querySelectorAll(
+          ".story-contents p, .story-elements-wrapper p, [class*='story-content'] p"
+        );
+        if (paras.length > 0) {
+          description = Array.from(paras)
+            .map(p => p.innerText.trim())
+            .filter(p => p.length > 0)
+            .join("\n\n");
+        }
+      }
+
+      // 3. Fallback: <article> tag
+      if (!description) {
+        description = extractText(document.querySelector("article"));
+      }
+
+      // 4. Fallback: all <p> tags on the page (broad)
+      if (!description) {
+        description = Array.from(document.querySelectorAll("p"))
           .map(p => p.innerText.trim())
-          .filter(p => p.length > 40)
-          .slice(0, 2)
-          .join(" ") ||
-        document.querySelector('meta[name="description"]')?.content ||
-        "";
+          .filter(p => p.length > 20)
+          .join("\n\n");
+      }
+
+      // 5. Last resort: meta description
+      if (!description) {
+        description = document.querySelector('meta[name="description"]')?.content || "";
+      }
 
       return {
         image,
@@ -130,6 +210,7 @@ async function scrapeDetails(page, url) {
     });
 
   } catch (err) {
+    console.log("❌ SCRAPE DETAIL ERROR:", err.message);
     return { image: "", description: "", publishTime: "" };
   }
 }
@@ -204,7 +285,7 @@ function formatBengaliDate(date) {
 
   const formatter = new Intl.DateTimeFormat("bn-BD", options);
   let str = formatter.format(date);
-  
+
   // Refining format to "০৩ এপ্রিল ২০২৬, ২০:২৭"
   return str.replace(",", "").replace(" এ ", ", ");
 }
@@ -217,10 +298,11 @@ async function scrape() {
 
   let options = {};
 
-  if (process.env.VERCEL) {
+
+  if (process.env.VERCEL || process.env.RENDER) {
     const CHROMIUM_PACK_URL = "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar";
     options = {
-      args: [...chromium.args, "--hide-scrollbars", "--disable-web-security"],
+      args: [...chromium.args, "--hide-scrollbars", "--disable-web-security", "--no-sandbox", "--disable-setuid-sandbox"],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
       headless: chromium.headless,
@@ -287,14 +369,18 @@ async function scrape() {
     const details = await scrapeDetails(page, news.link);
     const pubDate = getBSTDate(details.publishTime || news.time);
 
+    console.log(`📝 DESC (200): ${details.description?.substring(0, 200) || "❌ EMPTY"}`);
+
+
+    // Prepare payload as per strict requirements
     const payload = {
-      source: "prothom_alo",
       title: news.title,
+      description: details.description, // FULL ARTICLE TEXT ONLY
       link: news.link,
       image: details.image || "",
-      description: `প্রকাশ: ${formatBengaliDate(pubDate)} — ${details.description}`,
-      time_text: formatBST(pubDate),
-      scraped_at: formatBST(new Date())
+      source: "prothom alo",
+      sourceBangla: "প্রথম আলো",
+      sourceTime: pubDate.toISOString()
     };
 
     console.log(`🚀 SENDING TO WEBHOOK: ${payload.title}`);
@@ -306,10 +392,45 @@ async function scrape() {
   console.log("\n🎉 DONE!");
 }
 
-// Export for Vercel
-module.exports = scrape;
+// ==========================
+// SERVER ROUTES (For Render/External Cron)
+// ==========================
 
-// Run if called directly
-if (require.main === module) {
-  scrape();
+// Health Check
+app.get("/", (req, res) => {
+  res.send("Prothom Alo News Scraper is Running! 🚀");
+});
+
+// Scrape Endpoint
+app.get("/scrape", async (req, res) => {
+  const { key } = req.query;
+  const SCRAPER_KEY = process.env.SCRAPER_KEY || "my_special_scraper_key_2026";
+
+  if (key !== SCRAPER_KEY) {
+    return res.status(401).json({ success: false, message: "Unauthorized: Invalid or missing key" });
+  }
+
+  try {
+    console.log("Scrape triggered via HTTP");
+    // Run in background to avoid Render timeout if it takes too long
+    scrape().catch(err => console.error("Async scrape error:", err));
+
+    res.status(200).json({ success: true, message: "Scraping started in background..." });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Export for Vercel
+module.exports = app;
+
+// Run Server if not on Vercel
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`📡 Server is listening on port ${PORT}`);
+    console.log(`🔗 Scrape URL: http://localhost:${PORT}/scrape?key=YOUR_KEY`);
+  });
 }
+
+// Keep scrape available for direct module usage if needed
+module.exports.scrape = scrape;

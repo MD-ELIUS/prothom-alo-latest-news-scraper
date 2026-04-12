@@ -1,6 +1,6 @@
-const scrape = require("../index");
+const { scrape } = require("../index");
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const { key } = req.query;
 
   // Security check: Only allow if the key matches the environment variable

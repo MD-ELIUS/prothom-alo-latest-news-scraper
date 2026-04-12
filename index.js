@@ -340,7 +340,16 @@ async function scrape() {
     { waitUntil: "domcontentloaded", timeout: 60000 }
   );
 
-  console.log("📄 Page loaded");
+  // Set Viewport to mimic a real desktop browser
+  await page.setViewport({ width: 1280, height: 800 });
+
+  console.log("⏳ Waiting for news to load...");
+  // অন্তত একটি নিউজ কার্ড আসা পর্যন্ত ১০ সেকেন্ড অপেক্ষা করবে
+  await page.waitForSelector(".wide-story-card, .news_with_item", { timeout: 15000 }).catch(() => {
+    console.log("⚠️ No news cards found after 15s wait.");
+  });
+
+  console.log("📄 Page loaded & Hydrated");
 
   const newsList = await page.evaluate(() => {
     const items = [];

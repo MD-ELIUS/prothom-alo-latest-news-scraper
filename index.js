@@ -11,10 +11,9 @@ try {
   // Local environment might not have this
 }
 
-// ⚠️ তোমার Render বা n8n এর আসল webhook URL দাও
-// Example: "https://your-app-name.onrender.com/webhook/news"
-// অথবা n8n ব্যবহার করলে: "https://your-n8n-instance.cloud/webhook/xxxxx"
-const WEBHOOK_URL = "https://n8n-latest-tl33.onrender.com/webhook/news";
+// ⚠️ Render এর Environment Variables থেকে Webhook URL নেবে
+const WEBHOOK_URL = process.env.WEBHOOK_URL || "https://n8n-latest-tl33.onrender.com/webhook/news";
+const SCRAPER_KEY = process.env.SCRAPER_KEY || "my_special_scraper_key_2026";
 
 
 const sent = new Set();
@@ -77,7 +76,7 @@ async function sendToN8N(payload, retry = 2) {
 
   try {
     await axios.post(WEBHOOK_URL, payload, {
-      timeout: 10000,
+      timeout: 30000, // ৩০ সেকেন্ড করে দেওয়া হলো
       headers: { "Content-Type": "application/json" }
     });
 
@@ -99,13 +98,14 @@ async function sendToN8N(payload, retry = 2) {
 // ==========================
 async function scrapeDetails(page, url) {
   try {
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+    console.log(`🔍 FETCHING DETAILS: ${url}`);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // Wait for article body to render (Prothom Alo is React-based)
+    // Wait for article body to render
     await page.waitForSelector(
       ".story-contents, .story-elements-wrapper, [class*='story-content'], article p",
-      { timeout: 8000 }
-    ).catch(() => { }); // silent if not found
+      { timeout: 10000 }
+    ).catch(() => { }); 
 
     return await page.evaluate(() => {
       const image =
@@ -300,12 +300,22 @@ async function scrape() {
 
 
   if (process.env.VERCEL || process.env.RENDER) {
+    console.log("🌐 Detected Cloud Environment (Vercel/Render)");
     const CHROMIUM_PACK_URL = "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar";
     options = {
-      args: [...chromium.args, "--hide-scrollbars", "--disable-web-security", "--no-sandbox", "--disable-setuid-sandbox"],
-      defaultViewport: chromium.defaultViewport,
+      args: [
+        ...(chromium ? chromium.args : []),
+        "--hide-scrollbars",
+        "--disable-web-security",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--single-process",
+        "--no-zygote"
+      ],
+      defaultViewport: chromium ? chromium.defaultViewport : null,
       executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
-      headless: chromium.headless,
+      headless: chromium ? chromium.headless : true,
       ignoreHTTPSErrors: true,
     };
   } else {
@@ -321,9 +331,13 @@ async function scrape() {
 
   const page = await browser.newPage();
 
+  // Set User Agent to avoid being blocked and speed up loading
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36');
+
+  console.log("📄 Opening Prothom Alo...");
   await page.goto(
     "https://www.prothomalo.com/collection/latest",
-    { waitUntil: "networkidle2" }
+    { waitUntil: "domcontentloaded", timeout: 60000 }
   );
 
   console.log("📄 Page loaded");
@@ -404,18 +418,24 @@ app.get("/", (req, res) => {
 // Scrape Endpoint
 app.get("/scrape", async (req, res) => {
   const { key } = req.query;
-  const SCRAPER_KEY = process.env.SCRAPER_KEY || "my_special_scraper_key_2026";
 
   if (key !== SCRAPER_KEY) {
     return res.status(401).json({ success: false, message: "Unauthorized: Invalid or missing key" });
   }
 
   try {
-    console.log("Scrape triggered via HTTP");
-    // Run in background to avoid Render timeout if it takes too long
-    scrape().catch(err => console.error("Async scrape error:", err));
+    console.log("🚀 Scrape triggered via HTTP/Cron");
+    // Run in background to avoid Render timeout
+    scrape().catch(err => {
+      console.error("❌ CRITICAL SCRAPE ERROR:", err.message);
+      console.error(err.stack);
+    });
 
-    res.status(200).json({ success: true, message: "Scraping started in background..." });
+    res.status(200).json({ 
+      success: true, 
+      message: "Scraping started in background...",
+      environment: process.env.RENDER ? "Render" : "Local" 
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

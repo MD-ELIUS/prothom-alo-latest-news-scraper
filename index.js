@@ -251,6 +251,22 @@ function getBSTDate(timeStr) {
 }
 
 // ==========================
+// BD ISO FORMATTER (With +06:00 Offset)
+// ==========================
+function formatBDISO(date) {
+  const options = {
+    timeZone: 'Asia/Dhaka',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  };
+  const formatter = new Intl.DateTimeFormat('en-CA', options);
+  const parts = formatter.formatToParts(date);
+  const f = (type) => parts.find(p => p.type === type).value;
+  return `${f('year')}-${f('month')}-${f('day')}T${f('hour')}:${f('minute')}:${f('second')}.000+06:00`;
+}
+
+// ==========================
 // FORMAT HELPER
 // ==========================
 function formatBST(date) {
@@ -403,7 +419,7 @@ async function scrape() {
       image: details.image || "",
       source: "prothom alo",
       sourceBangla: "প্রথম আলো",
-      sourceTime: pubDate.toISOString()
+      sourceTime: formatBDISO(pubDate)
     };
 
     console.log(`🚀 SENDING TO WEBHOOK: ${payload.title}`);

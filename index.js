@@ -263,7 +263,7 @@ function formatBDISO(date) {
   const formatter = new Intl.DateTimeFormat('en-CA', options);
   const parts = formatter.formatToParts(date);
   const f = (type) => parts.find(p => p.type === type).value;
-  return `${f('year')}-${f('month')}-${f('day')}T${f('hour')}:${f('minute')}:${f('second')}.000+06:00`;
+  return `${f('year')}-${f('month')}-${f('day')}T${f('hour')}:${f('minute')}:${f('second')}.000Z`;
 }
 
 // ==========================

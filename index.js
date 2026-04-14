@@ -105,7 +105,7 @@ async function scrapeDetails(page, url) {
     await page.waitForSelector(
       ".story-contents, .story-elements-wrapper, [class*='story-content'], article p",
       { timeout: 10000 }
-    ).catch(() => { }); 
+    ).catch(() => { });
 
     return await page.evaluate(() => {
       const image =
@@ -263,7 +263,7 @@ function formatBDISO(date) {
   const formatter = new Intl.DateTimeFormat('en-CA', options);
   const parts = formatter.formatToParts(date);
   const f = (type) => parts.find(p => p.type === type).value;
-  return `${f('year')}-${f('month')}-${f('day')}T${f('hour')}:${f('minute')}:${f('second')}.000Z`;
+  return `${f('year')}-${f('month')}-${f('day')}T${f('hour')}:${f('minute')}:${f('second')}.000+06:00`;
 }
 
 // ==========================
@@ -410,13 +410,15 @@ async function scrape() {
 
     console.log(`📝 DESC (200): ${details.description?.substring(0, 200) || "❌ EMPTY"}`);
 
+    // Remove Prothom Alo overlay/logo from image URL
+    const cleanImage = (details.image || "").split("&overlay=")[0].split("?")[0] +
+      "?" + (details.image || "").split("?")[1]?.split("&overlay=")[0];
 
-    // Prepare payload as per strict requirements
     const payload = {
       title: news.title,
-      description: details.description, // FULL ARTICLE TEXT ONLY
+      description: details.description,
       link: news.link,
-      image: details.image || "",
+      image: cleanImage || details.image || "",
       source: "prothom alo",
       sourceBangla: "প্রথম আলো",
       sourceTime: formatBDISO(pubDate)
@@ -456,10 +458,10 @@ app.get("/scrape", async (req, res) => {
       console.error(err.stack);
     });
 
-    res.status(200).json({ 
-      success: true, 
+    res.status(200).json({
+      success: true,
       message: "Scraping started in background...",
-      environment: process.env.RENDER ? "Render" : "Local" 
+      environment: process.env.RENDER ? "Render" : "Local"
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
